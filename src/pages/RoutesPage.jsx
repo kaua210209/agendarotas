@@ -1,5 +1,24 @@
 import { useEffect, useState } from 'react'
+import Swal from 'sweetalert2'
 import { supabase } from '../lib/supabase'
+
+const DEFAULT_SCHEDULES = {
+  'Bom Jesus-Muriaé': [
+    '07:00',
+    '09:00',
+    '11:20',
+    '13:00',
+    '17:00',
+  ],
+
+  'Muriaé-Bom Jesus': [
+    '08:00',
+    '10:30',
+    '12:00',
+    '15:30',
+    '17:30',
+  ],
+}
 
 function RoutesPage({ date, onBack, onSelectRoute }) {
   const [routes, setRoutes] = useState([])
@@ -12,26 +31,112 @@ function RoutesPage({ date, onBack, onSelectRoute }) {
   async function loadRoutes() {
     setLoading(true)
 
-    const { data, error } = await supabase
-      .from('routes')
-      .select(`
-        id,
-        origin,
-        destination,
-        distance,
-        active
-      `)
-      .eq('active', true)
-      .order('id')
+    try {
+      // Busca as rotas cadastradas
+      const { data: routesData, error: routesError } =
+        await supabase
+          .from('routes')
+          .select(`
+            id,
+            origin,
+            destination,
+            distance,
+            active
+          `)
+          .eq('active', true)
+          .order('id')
 
-    if (error) {
+      if (routesError) {
+        throw routesError
+      }
+
+      const availableRoutes = routesData || []
+
+      // Prepara os horários padrão de cada rota
+      for (const route of availableRoutes) {
+        const routeKey = `${route.origin}-${route.destination}`
+
+        const defaultTimes =
+          DEFAULT_SCHEDULES[routeKey]
+
+        // Se não houver horários padrão para a rota,
+        // passa para a próxima.
+        if (!defaultTimes) {
+          continue
+        }
+
+        // Verifica se já existem horários para esta rota
+        // neste dia.
+        const {
+          data: existingSchedules,
+          error: schedulesError,
+        } = await supabase
+          .from('schedules')
+          .select('id')
+          .eq('route_id', route.id)
+          .eq('date', date)
+
+        if (schedulesError) {
+          throw schedulesError
+        }
+
+        /*
+          Se já existe qualquer horário para essa rota
+          nesse dia, não cria os horários novamente.
+
+          Isso também permite que você edite ou exclua
+          horários sem que eles sejam recriados.
+        */
+        if (
+          existingSchedules &&
+          existingSchedules.length > 0
+        ) {
+          continue
+        }
+
+        // Cria os horários padrão
+        const schedulesToCreate =
+          defaultTimes.map((time) => ({
+            route_id: route.id,
+            date: date,
+            time: time,
+            active: true,
+          }))
+
+        const { error: insertError } =
+          await supabase
+            .from('schedules')
+            .upsert(
+              schedulesToCreate,
+              {
+                onConflict:
+                  'route_id,date,time',
+                ignoreDuplicates: true,
+              },
+            )
+
+        if (insertError) {
+          throw insertError
+        }
+      }
+
+      setRoutes(availableRoutes)
+    } catch (error) {
       console.error(error)
-      setRoutes([])
-    } else {
-      setRoutes(data || [])
-    }
 
-    setLoading(false)
+      setRoutes([])
+
+      await Swal.fire({
+        icon: 'error',
+        title: 'Erro ao carregar o dia',
+        text:
+          'Não foi possível preparar os horários deste dia.',
+        confirmButtonText: 'Fechar',
+        confirmButtonColor: '#2563eb',
+      })
+    } finally {
+      setLoading(false)
+    }
   }
 
   const formattedDate = new Date(
@@ -74,7 +179,7 @@ function RoutesPage({ date, onBack, onSelectRoute }) {
 
         {loading ? (
           <div className="mt-8 text-center text-sm text-slate-500">
-            Carregando rotas...
+            Preparando horários...
           </div>
         ) : routes.length === 0 ? (
           <div className="mt-8 rounded-3xl bg-white p-6 text-center shadow-sm">
@@ -102,8 +207,6 @@ function RoutesPage({ date, onBack, onSelectRoute }) {
               >
                 <div className="flex items-center justify-between gap-4">
 
-                  {/* Informações */}
-
                   <div className="min-w-0">
 
                     <h2 className="font-semibold text-slate-900">
@@ -117,8 +220,6 @@ function RoutesPage({ date, onBack, onSelectRoute }) {
                     </p>
 
                   </div>
-
-                  {/* Seta */}
 
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xl text-blue-600">
                     ›
